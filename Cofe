@@ -1,0 +1,98 @@
+# 1. Load the libraries
+library(rvest)
+library(dplyr)
+library(purrr)
+library(stringr)
+
+# --- CONFIGURATION ---
+# Base URL for the AIB branch search results. 
+# We iterate through 'page=1' up to 'page=9' to get all results.
+base_url <- "https://aib.ie/search-results?query=Service+finder&verticalUrl=Branches.html&page="
+
+# Total number of pages to scrape (168 results / 20 per page = 8.4, so 9 pages)
+total_pages <- 1:9 
+
+# --- CRITICAL PLACEHOLDERS: VERIFY AND UPDATE THESE SELECTORS ---
+# These are educated guesses and must be checked on the live website.
+branch_container_selector <- ".search-result-card" 
+branch_name_selector      <- ".result-name" 
+branch_address_selector   <- ".result-address-line"
+# ----------------------------------------------------------------
+
+# --- FUNCTION TO SCRAPE A SINGLE PAGE ---
+scrape_page <- function(page_number) {
+  
+  # Construct the full URL for the current page
+  target_url <- paste0(base_url, page_number)
+  message(paste("Scraping page:", page_number, "..."))
+  
+  # Read the HTML content
+  page_content <- tryCatch(
+    read_html(target_url),
+    error = function(e) {
+      message(paste("Error reading URL for page", page_number, ":", e$message))
+      # Introduce a short pause before failing to avoid rate-limiting issues
+      Sys.sleep(3) 
+      return(NULL)
+    }
+  )
+  
+  if (is.null(page_content)) {
+    return(NULL)
+  }
+  
+  # Extract all branch containers (e.g., all individual <div>s holding a branch)
+  branch_containers <- page_content %>%
+    html_elements(branch_container_selector)
+  
+  if (length(branch_containers) == 0) {
+    message(paste("No branch containers found on page", page_number, ". Check the selector:", branch_container_selector))
+    return(NULL)
+  }
+  
+  # Iterate over each container and extract data
+  branch_data <- branch_containers %>%
+    map_dfr(~ {
+      
+      # Extract Name
+      name <- .x %>%
+        html_element(branch_name_selector) %>%
+        html_text(trim = TRUE)
+      
+      # Extract Address
+      address <- .x %>%
+        html_element(branch_address_selector) %>%
+        html_text(trim = TRUE) %>%
+        # Clean up newlines/carriage returns and replace with a comma-space
+        str_replace_all("[\r\n]+", ", ") %>%
+        str_trim()
+      
+      # Return as a data frame row
+      data.frame(
+        Name = name,
+        Address = address,
+        stringsAsFactors = FALSE
+      )
+    })
+  
+  return(branch_data)
+}
+
+# --- MAIN EXECUTION: SCRAPE ALL PAGES ---
+
+print("Starting AIB Branch Scraping...")
+# Use map_dfr to run the function for every page and combine the results
+all_aib_branches <- total_pages %>%
+  map_dfr(scrape_page)
+
+# --- DISPLAY AND SAVE RESULTS ---
+if (nrow(all_aib_branches) > 0) {
+  print(paste("Successfully scraped a total of", nrow(all_aib_branches), "branches."))
+  print("--- Scraped AIB Branch Data (First 10 Rows) ---")
+  print(head(all_aib_branches, 10))
+  
+  # Example of saving the results
+  # write.csv(all_aib_branches, "aib_branches_full_list.csv", row.names = FALSE)
+} else {
+  print("Scraping failed or returned no data. **Please verify the CSS selectors in the code and try again.**")
+}
